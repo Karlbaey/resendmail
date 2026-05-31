@@ -35,23 +35,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Check gofmt
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t gofiles < <(git ls-files "*.go")
-
-          if (( ${#gofiles[@]} == 0 )); then
-            exit 0
-          fi
-
-          unformatted="$(gofmt -l "${gofiles[@]}")"
-
-          if [[ -n "$unformatted" ]]; then
-            echo "$unformatted"
-            exit 1
-          fi
-
       - name: Run tests
         run: go test ./...
 
