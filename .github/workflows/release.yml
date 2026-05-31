@@ -110,7 +110,7 @@ jobs:
 
       - name: Publish GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || github.token }}
         shell: bash
         run: |
           set -euo pipefail
