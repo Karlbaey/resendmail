@@ -99,6 +99,16 @@
 - 结论：需要补充 `AGENTS.md`。
 - 额外约束：所有文本文件一律使用 CRLF 换行。
 
+20. GitHub 发布流程
+
+- 结论：使用 GitHub Actions 在推送 `vX.Y.Z` tag 时自动构建并发布。
+- 约定：仅 `vX.Y.Z` 触发正式发布，不支持 `rc` 或其他预发布 tag。
+- 约定：发布前必须通过 `gofmt` 检查和 `go test ./...`。
+- 约定：发布产物覆盖 `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`。
+- 约定：`linux` 和 `darwin` 产物使用 `.tar.gz`，`windows` 使用 `.zip`。
+- 约定：归档文件名包含版本、系统和架构，并额外上传 `SHA256SUMS`。
+- 约定：GitHub Release 文案使用自动生成的 release notes。
+
 ## 当前冻结范围
 
 下面这份清单是后续实现必须遵守的第一版规格：
@@ -126,6 +136,12 @@
 - 失败返回非 0 并输出明确错误
 - 提供单元测试
 - 不提供默认真实 Resend 集成测试
+- 推送 `vX.Y.Z` tag 时自动创建或更新 GitHub Release
+- Release 前执行 `gofmt` 检查和 `go test ./...`
+- Release 产物包含 `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`
+- `linux`/`darwin` 上传 `.tar.gz`，`windows` 上传 `.zip`
+- Release 额外上传 `SHA256SUMS`
+- Release notes 使用 GitHub 自动生成内容
 
 ## 实现前说明
 
