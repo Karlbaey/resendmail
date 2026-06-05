@@ -22,11 +22,12 @@ const (
 )
 
 type runtimeDeps struct {
-	stdout    io.Writer
-	stderr    io.Writer
-	getenv    func(string) string
-	readFile  func(string) ([]byte, error)
-	newSender func(apiKey string, timeout time.Duration) emailSender
+	stdout     io.Writer
+	stderr     io.Writer
+	getenv     func(string) string
+	readFile   func(string) ([]byte, error)
+	newSender  func(apiKey string, timeout time.Duration) emailSender
+	promptSend func(sendOptions) (sendOptions, error)
 }
 
 type emailSender interface {
@@ -71,6 +72,9 @@ func defaultRuntimeDeps(stdout, stderr io.Writer) runtimeDeps {
 				HTTPClient: &http.Client{Timeout: timeout},
 			}
 		},
+		promptSend: func(sendOptions) (sendOptions, error) {
+			return sendOptions{}, errors.New("interactive mode is not implemented")
+		},
 	}
 }
 
@@ -104,6 +108,28 @@ func runSend(args []string, deps runtimeDeps) int {
 	if helpRequested {
 		writeSendUsage(deps.stdout)
 		return 0
+	}
+
+	usedInteractiveMode := needsInteractiveMode(opts)
+	if usedInteractiveMode {
+		if deps.promptSend == nil {
+			_, _ = fmt.Fprintln(deps.stderr, "error: interactive mode is not available")
+			return 1
+		}
+
+		opts, err = deps.promptSend(opts)
+		if err != nil {
+			_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	if err := validateSendOptions(opts); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
+		if usedInteractiveMode {
+			return 1
+		}
+		return 2
 	}
 
 	req, err := buildSendRequest(opts, deps.readFile)
@@ -174,39 +200,29 @@ func parseSendArgs(args []string) (sendOptions, bool, error) {
 		return sendOptions{}, false, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
-	if err := validateSendOptions(opts); err != nil {
+	if err := validateParsedSendOptions(opts); err != nil {
 		return sendOptions{}, false, err
 	}
 
 	return opts, false, nil
 }
 
-func validateSendOptions(opts sendOptions) error {
-	if strings.TrimSpace(opts.From) == "" {
-		return errors.New("--from is required")
-	}
-	if len(opts.To.values) == 0 {
-		return errors.New("at least one --to is required")
-	}
-	if strings.TrimSpace(opts.Subject) == "" {
-		return errors.New("--subject is required")
-	}
+func validateParsedSendOptions(opts sendOptions) error {
 	if opts.Timeout <= 0 {
 		return errors.New("--timeout must be greater than 0")
 	}
-
 	if opts.Text.Inline.set && opts.Text.File.set {
 		return errors.New("--text and --text-file are mutually exclusive")
 	}
 	if opts.HTML.Inline.set && opts.HTML.File.set {
 		return errors.New("--html and --html-file are mutually exclusive")
 	}
-	if !opts.Text.Inline.set && !opts.Text.File.set && !opts.HTML.Inline.set && !opts.HTML.File.set {
-		return errors.New("at least one body source is required")
-	}
 
-	if err := validateAddress("--from", strings.TrimSpace(opts.From)); err != nil {
-		return err
+	from := strings.TrimSpace(opts.From)
+	if from != "" {
+		if err := validateAddress("--from", from); err != nil {
+			return err
+		}
 	}
 	if err := validateAddressList("--to", opts.To.values); err != nil {
 		return err
@@ -216,6 +232,34 @@ func validateSendOptions(opts sendOptions) error {
 	}
 
 	return nil
+}
+
+func validateSendOptions(opts sendOptions) error {
+	if err := validateParsedSendOptions(opts); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.From) == "" {
+		return errors.New("--from is required")
+	}
+	if len(opts.To.values) == 0 {
+		return errors.New("at least one --to is required")
+	}
+	if strings.TrimSpace(opts.Subject) == "" {
+		return errors.New("--subject is required")
+	}
+	if !hasBodySource(opts) {
+		return errors.New("at least one body source is required")
+	}
+
+	return nil
+}
+
+func needsInteractiveMode(opts sendOptions) bool {
+	return strings.TrimSpace(opts.From) == "" || len(opts.To.values) == 0 || strings.TrimSpace(opts.Subject) == "" || !hasBodySource(opts)
+}
+
+func hasBodySource(opts sendOptions) bool {
+	return opts.Text.Inline.set || opts.Text.File.set || opts.HTML.Inline.set || opts.HTML.File.set
 }
 
 func buildSendRequest(opts sendOptions, readFile func(string) ([]byte, error)) (SendRequest, error) {
