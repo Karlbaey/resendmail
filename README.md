@@ -2,6 +2,14 @@
 
 `resendmail` 是一个使用 Go 标准库实现的 CLI，用来直接调用 Resend HTTP API 发送电子邮件。
 
+友情链接：[LINUX DO](https://linux.do)。
+
+## 想法
+
+发邮件大多要开一个网页端写邮件，或者写个脚本，我嫌麻烦就用 Go 糊了一个命令行版的。
+
+你得先去 [Resend](https://resend.com) 注册个账号，获取 API Key。
+
 ## 要求
 
 - Go 1.26+
@@ -61,5 +69,3 @@ resendmail send \
 gofmt -w *.go
 go test ./...
 ```
-
-需求范围见 [docs/requirements.md](docs/requirements.md)，仓库协作约束见 [AGENTS.md](AGENTS.md)。
