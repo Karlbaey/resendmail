@@ -7,6 +7,16 @@
 - Go 1.26+
 - 环境变量 `RESEND_API_KEY`
 
+## 手动编译
+
+在仓库根目录执行：
+
+```bash
+go build -o resendmail .
+```
+
+在 macOS/Linux 上会生成 `./resendmail`，在 Windows 上会生成 `.\resendmail.exe`。
+
 ## 用法
 
 ```bash

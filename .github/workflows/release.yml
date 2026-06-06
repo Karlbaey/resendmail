@@ -35,6 +35,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install UPX
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          install-only: true
+
       - name: Run tests
         run: go test ./...
 
@@ -48,15 +53,15 @@ jobs:
           mkdir -p "$dist_dir"
 
           targets=(
-            "linux amd64 tar.gz"
-            "linux arm64 tar.gz"
-            "darwin amd64 tar.gz"
-            "darwin arm64 tar.gz"
-            "windows amd64 zip"
+            "linux amd64 tar.gz upx"
+            "linux arm64 tar.gz upx"
+            "darwin amd64 tar.gz none"
+            "darwin arm64 tar.gz none"
+            "windows amd64 zip upx"
           )
 
           for target in "${targets[@]}"; do
-            read -r goos goarch archive <<< "$target"
+            read -r goos goarch archive binary_packer <<< "$target"
 
             base="resendmail_${version}_${goos}_${goarch}"
             stage_root="$(mktemp -d)"
@@ -70,7 +75,15 @@ jobs:
             mkdir -p "$package_dir"
 
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -o "${package_dir}/${binary_name}" .
+              go build \
+                -trimpath \
+                -buildvcs=false \
+                -ldflags='-s -w -buildid=' \
+                -o "${package_dir}/${binary_name}" .
+
+            if [[ "$binary_packer" == "upx" ]]; then
+              upx --best --lzma "${package_dir}/${binary_name}"
+            fi
 
             cp README.md "${package_dir}/README.md"
 

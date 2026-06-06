@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/mail"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,11 +25,18 @@ const (
 )
 
 type runtimeDeps struct {
-	stdout    io.Writer
-	stderr    io.Writer
-	getenv    func(string) string
-	readFile  func(string) ([]byte, error)
-	newSender func(apiKey string, timeout time.Duration) emailSender
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+	getenv     func(string) string
+	readFile   func(string) ([]byte, error)
+	createTemp func() (string, error)
+	removeFile func(string) error
+	openEditor func(string, <-chan struct{}) error
+	notifySig  func(chan<- os.Signal)
+	stopSig    func(chan<- os.Signal)
+	newSender  func(apiKey string, timeout time.Duration) emailSender
+	promptSend func(sendOptions, <-chan struct{}) (sendOptions, error)
 }
 
 type emailSender interface {
@@ -58,12 +68,20 @@ type singleStringFlag struct {
 	set   bool
 }
 
-func defaultRuntimeDeps(stdout, stderr io.Writer) runtimeDeps {
-	return runtimeDeps{
-		stdout:   stdout,
-		stderr:   stderr,
-		getenv:   os.Getenv,
-		readFile: os.ReadFile,
+func defaultRuntimeDeps(stdin io.Reader, stdout, stderr io.Writer) runtimeDeps {
+	deps := runtimeDeps{
+		stdin:      stdin,
+		stdout:     stdout,
+		stderr:     stderr,
+		getenv:     os.Getenv,
+		readFile:   os.ReadFile,
+		createTemp: defaultCreateTempFile,
+		removeFile: os.Remove,
+		openEditor: openSystemEditor,
+		notifySig: func(ch chan<- os.Signal) {
+			signal.Notify(ch, os.Interrupt)
+		},
+		stopSig: signal.Stop,
 		newSender: func(apiKey string, timeout time.Duration) emailSender {
 			return &Client{
 				BaseURL:    defaultResendURL,
@@ -72,6 +90,20 @@ func defaultRuntimeDeps(stdout, stderr io.Writer) runtimeDeps {
 			}
 		},
 	}
+
+	deps.promptSend = func(opts sendOptions, interrupt <-chan struct{}) (sendOptions, error) {
+		return promptSendInteractive(opts, interactiveDeps{
+			stdin:      deps.stdin,
+			stdout:     deps.stdout,
+			stderr:     deps.stderr,
+			readFile:   deps.readFile,
+			createTemp: deps.createTemp,
+			removeFile: deps.removeFile,
+			openEditor: deps.openEditor,
+		}, interrupt)
+	}
+
+	return deps
 }
 
 func run(args []string, deps runtimeDeps) int {
@@ -106,6 +138,37 @@ func runSend(args []string, deps runtimeDeps) int {
 		return 0
 	}
 
+	interrupts := newInterruptMonitor(deps)
+	defer interrupts.Stop()
+
+	usedInteractiveMode := needsInteractiveMode(opts)
+	if usedInteractiveMode {
+		if deps.promptSend == nil {
+			_, _ = fmt.Fprintln(deps.stderr, "error: interactive mode is not available")
+			return 1
+		}
+
+		opts, err = deps.promptSend(opts, interrupts.Done())
+		if err != nil {
+			if errors.Is(err, errSendCancelled) {
+				return 0
+			}
+			if errors.Is(err, errInterrupted) || interrupts.Interrupted() {
+				return 130
+			}
+			_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	if err := validateSendOptions(opts); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
+		if usedInteractiveMode {
+			return 1
+		}
+		return 2
+	}
+
 	req, err := buildSendRequest(opts, deps.readFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
@@ -118,10 +181,19 @@ func runSend(args []string, deps runtimeDeps) int {
 		return 1
 	}
 
-	resp, err := deps.newSender(apiKey, opts.Timeout).Send(context.Background(), req)
+	resp, err := deps.newSender(apiKey, opts.Timeout).Send(interrupts.Context(), req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && interrupts.Interrupted() {
+			return 130
+		}
+		if interrupts.Interrupted() {
+			return 130
+		}
 		_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
 		return 1
+	}
+	if interrupts.Interrupted() {
+		return 130
 	}
 
 	enc := json.NewEncoder(deps.stdout)
@@ -131,6 +203,78 @@ func runSend(args []string, deps runtimeDeps) int {
 	}
 
 	return 0
+}
+
+type interruptMonitor struct {
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
+	stopSignals func()
+	interrupted atomic.Bool
+	once        sync.Once
+}
+
+func newInterruptMonitor(deps runtimeDeps) *interruptMonitor {
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor := &interruptMonitor{
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		stopSignals: func() {
+		},
+	}
+
+	if deps.notifySig == nil {
+		return monitor
+	}
+
+	signalCh := make(chan os.Signal, 1)
+	deps.notifySig(signalCh)
+
+	stopSig := deps.stopSig
+	if stopSig == nil {
+		stopSig = func(chan<- os.Signal) {}
+	}
+
+	monitor.stopSignals = func() {
+		stopSig(signalCh)
+	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signalCh:
+			monitor.interrupted.Store(true)
+			monitor.closeDone()
+			cancel()
+		}
+	}()
+
+	return monitor
+}
+
+func (m *interruptMonitor) Context() context.Context {
+	return m.ctx
+}
+
+func (m *interruptMonitor) Done() <-chan struct{} {
+	return m.done
+}
+
+func (m *interruptMonitor) Interrupted() bool {
+	return m.interrupted.Load()
+}
+
+func (m *interruptMonitor) Stop() {
+	m.stopSignals()
+	m.cancel()
+}
+
+func (m *interruptMonitor) closeDone() {
+	m.once.Do(func() {
+		close(m.done)
+	})
 }
 
 func parseSendArgs(args []string) (sendOptions, bool, error) {
@@ -174,39 +318,29 @@ func parseSendArgs(args []string) (sendOptions, bool, error) {
 		return sendOptions{}, false, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
-	if err := validateSendOptions(opts); err != nil {
+	if err := validateParsedSendOptions(opts); err != nil {
 		return sendOptions{}, false, err
 	}
 
 	return opts, false, nil
 }
 
-func validateSendOptions(opts sendOptions) error {
-	if strings.TrimSpace(opts.From) == "" {
-		return errors.New("--from is required")
-	}
-	if len(opts.To.values) == 0 {
-		return errors.New("at least one --to is required")
-	}
-	if strings.TrimSpace(opts.Subject) == "" {
-		return errors.New("--subject is required")
-	}
+func validateParsedSendOptions(opts sendOptions) error {
 	if opts.Timeout <= 0 {
 		return errors.New("--timeout must be greater than 0")
 	}
-
 	if opts.Text.Inline.set && opts.Text.File.set {
 		return errors.New("--text and --text-file are mutually exclusive")
 	}
 	if opts.HTML.Inline.set && opts.HTML.File.set {
 		return errors.New("--html and --html-file are mutually exclusive")
 	}
-	if !opts.Text.Inline.set && !opts.Text.File.set && !opts.HTML.Inline.set && !opts.HTML.File.set {
-		return errors.New("at least one body source is required")
-	}
 
-	if err := validateAddress("--from", strings.TrimSpace(opts.From)); err != nil {
-		return err
+	from := strings.TrimSpace(opts.From)
+	if from != "" {
+		if err := validateAddress("--from", from); err != nil {
+			return err
+		}
 	}
 	if err := validateAddressList("--to", opts.To.values); err != nil {
 		return err
@@ -216,6 +350,34 @@ func validateSendOptions(opts sendOptions) error {
 	}
 
 	return nil
+}
+
+func validateSendOptions(opts sendOptions) error {
+	if err := validateParsedSendOptions(opts); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.From) == "" {
+		return errors.New("--from is required")
+	}
+	if len(opts.To.values) == 0 {
+		return errors.New("at least one --to is required")
+	}
+	if strings.TrimSpace(opts.Subject) == "" {
+		return errors.New("--subject is required")
+	}
+	if !hasBodySource(opts) {
+		return errors.New("at least one body source is required")
+	}
+
+	return nil
+}
+
+func needsInteractiveMode(opts sendOptions) bool {
+	return strings.TrimSpace(opts.From) == "" || len(opts.To.values) == 0 || strings.TrimSpace(opts.Subject) == "" || !hasBodySource(opts)
+}
+
+func hasBodySource(opts sendOptions) bool {
+	return opts.Text.Inline.set || opts.Text.File.set || opts.HTML.Inline.set || opts.HTML.File.set
 }
 
 func buildSendRequest(opts sendOptions, readFile func(string) ([]byte, error)) (SendRequest, error) {
