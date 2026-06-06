@@ -175,7 +175,10 @@ func TestRunSendEntersInteractiveModeWhenRequiredFlagsAreMissing(t *testing.T) {
 		readFile: func(string) ([]byte, error) {
 			return nil, errors.New("unexpected file read")
 		},
-		promptSend: func(opts sendOptions) (sendOptions, error) {
+		promptSend: func(opts sendOptions, interrupt <-chan struct{}) (sendOptions, error) {
+			if interrupt == nil {
+				t.Fatal("expected interrupt channel to be provided")
+			}
 			gotPromptOpts = opts
 			opts.From = "sender@example.com"
 			opts.Subject = "interactive subject"
@@ -234,7 +237,7 @@ func TestRunSendInteractiveModeFailureReturnsRuntimeError(t *testing.T) {
 		stderr:   &stderr,
 		getenv:   func(string) string { return "test-api-key" },
 		readFile: func(string) ([]byte, error) { return nil, nil },
-		promptSend: func(sendOptions) (sendOptions, error) {
+		promptSend: func(sendOptions, <-chan struct{}) (sendOptions, error) {
 			return sendOptions{}, errors.New("interactive mode is not implemented")
 		},
 		newSender: func(string, time.Duration) emailSender {
@@ -248,6 +251,64 @@ func TestRunSendInteractiveModeFailureReturnsRuntimeError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "interactive mode is not implemented") {
 		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+func TestRunSendInteractiveCancellationReturnsZero(t *testing.T) {
+	t.Parallel()
+
+	exitCode := run([]string{
+		"send",
+		"--to", "recipient@example.com",
+	}, runtimeDeps{
+		stdout: &strings.Builder{},
+		stderr: &strings.Builder{},
+		getenv: func(string) string {
+			return "test-api-key"
+		},
+		readFile: func(string) ([]byte, error) {
+			return nil, nil
+		},
+		promptSend: func(sendOptions, <-chan struct{}) (sendOptions, error) {
+			return sendOptions{}, errSendCancelled
+		},
+		newSender: func(string, time.Duration) emailSender {
+			t.Fatal("sender should not be called")
+			return nil
+		},
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+}
+
+func TestRunSendInteractiveInterruptReturns130(t *testing.T) {
+	t.Parallel()
+
+	exitCode := run([]string{
+		"send",
+		"--to", "recipient@example.com",
+	}, runtimeDeps{
+		stdout: &strings.Builder{},
+		stderr: &strings.Builder{},
+		getenv: func(string) string {
+			return "test-api-key"
+		},
+		readFile: func(string) ([]byte, error) {
+			return nil, nil
+		},
+		promptSend: func(sendOptions, <-chan struct{}) (sendOptions, error) {
+			return sendOptions{}, errInterrupted
+		},
+		newSender: func(string, time.Duration) emailSender {
+			t.Fatal("sender should not be called")
+			return nil
+		},
+	})
+
+	if exitCode != 130 {
+		t.Fatalf("expected exit code 130, got %d", exitCode)
 	}
 }
 

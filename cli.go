@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/mail"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,12 +25,18 @@ const (
 )
 
 type runtimeDeps struct {
+	stdin      io.Reader
 	stdout     io.Writer
 	stderr     io.Writer
 	getenv     func(string) string
 	readFile   func(string) ([]byte, error)
+	createTemp func() (string, error)
+	removeFile func(string) error
+	openEditor func(string, <-chan struct{}) error
+	notifySig  func(chan<- os.Signal)
+	stopSig    func(chan<- os.Signal)
 	newSender  func(apiKey string, timeout time.Duration) emailSender
-	promptSend func(sendOptions) (sendOptions, error)
+	promptSend func(sendOptions, <-chan struct{}) (sendOptions, error)
 }
 
 type emailSender interface {
@@ -59,12 +68,20 @@ type singleStringFlag struct {
 	set   bool
 }
 
-func defaultRuntimeDeps(stdout, stderr io.Writer) runtimeDeps {
-	return runtimeDeps{
-		stdout:   stdout,
-		stderr:   stderr,
-		getenv:   os.Getenv,
-		readFile: os.ReadFile,
+func defaultRuntimeDeps(stdin io.Reader, stdout, stderr io.Writer) runtimeDeps {
+	deps := runtimeDeps{
+		stdin:      stdin,
+		stdout:     stdout,
+		stderr:     stderr,
+		getenv:     os.Getenv,
+		readFile:   os.ReadFile,
+		createTemp: defaultCreateTempFile,
+		removeFile: os.Remove,
+		openEditor: openSystemEditor,
+		notifySig: func(ch chan<- os.Signal) {
+			signal.Notify(ch, os.Interrupt)
+		},
+		stopSig: signal.Stop,
 		newSender: func(apiKey string, timeout time.Duration) emailSender {
 			return &Client{
 				BaseURL:    defaultResendURL,
@@ -72,10 +89,21 @@ func defaultRuntimeDeps(stdout, stderr io.Writer) runtimeDeps {
 				HTTPClient: &http.Client{Timeout: timeout},
 			}
 		},
-		promptSend: func(sendOptions) (sendOptions, error) {
-			return sendOptions{}, errors.New("interactive mode is not implemented")
-		},
 	}
+
+	deps.promptSend = func(opts sendOptions, interrupt <-chan struct{}) (sendOptions, error) {
+		return promptSendInteractive(opts, interactiveDeps{
+			stdin:      deps.stdin,
+			stdout:     deps.stdout,
+			stderr:     deps.stderr,
+			readFile:   deps.readFile,
+			createTemp: deps.createTemp,
+			removeFile: deps.removeFile,
+			openEditor: deps.openEditor,
+		}, interrupt)
+	}
+
+	return deps
 }
 
 func run(args []string, deps runtimeDeps) int {
@@ -110,6 +138,9 @@ func runSend(args []string, deps runtimeDeps) int {
 		return 0
 	}
 
+	interrupts := newInterruptMonitor(deps)
+	defer interrupts.Stop()
+
 	usedInteractiveMode := needsInteractiveMode(opts)
 	if usedInteractiveMode {
 		if deps.promptSend == nil {
@@ -117,8 +148,14 @@ func runSend(args []string, deps runtimeDeps) int {
 			return 1
 		}
 
-		opts, err = deps.promptSend(opts)
+		opts, err = deps.promptSend(opts, interrupts.Done())
 		if err != nil {
+			if errors.Is(err, errSendCancelled) {
+				return 0
+			}
+			if errors.Is(err, errInterrupted) || interrupts.Interrupted() {
+				return 130
+			}
 			_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
 			return 1
 		}
@@ -144,10 +181,19 @@ func runSend(args []string, deps runtimeDeps) int {
 		return 1
 	}
 
-	resp, err := deps.newSender(apiKey, opts.Timeout).Send(context.Background(), req)
+	resp, err := deps.newSender(apiKey, opts.Timeout).Send(interrupts.Context(), req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && interrupts.Interrupted() {
+			return 130
+		}
+		if interrupts.Interrupted() {
+			return 130
+		}
 		_, _ = fmt.Fprintf(deps.stderr, "error: %v\n", err)
 		return 1
+	}
+	if interrupts.Interrupted() {
+		return 130
 	}
 
 	enc := json.NewEncoder(deps.stdout)
@@ -157,6 +203,78 @@ func runSend(args []string, deps runtimeDeps) int {
 	}
 
 	return 0
+}
+
+type interruptMonitor struct {
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
+	stopSignals func()
+	interrupted atomic.Bool
+	once        sync.Once
+}
+
+func newInterruptMonitor(deps runtimeDeps) *interruptMonitor {
+	ctx, cancel := context.WithCancel(context.Background())
+	monitor := &interruptMonitor{
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		stopSignals: func() {
+		},
+	}
+
+	if deps.notifySig == nil {
+		return monitor
+	}
+
+	signalCh := make(chan os.Signal, 1)
+	deps.notifySig(signalCh)
+
+	stopSig := deps.stopSig
+	if stopSig == nil {
+		stopSig = func(chan<- os.Signal) {}
+	}
+
+	monitor.stopSignals = func() {
+		stopSig(signalCh)
+	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signalCh:
+			monitor.interrupted.Store(true)
+			monitor.closeDone()
+			cancel()
+		}
+	}()
+
+	return monitor
+}
+
+func (m *interruptMonitor) Context() context.Context {
+	return m.ctx
+}
+
+func (m *interruptMonitor) Done() <-chan struct{} {
+	return m.done
+}
+
+func (m *interruptMonitor) Interrupted() bool {
+	return m.interrupted.Load()
+}
+
+func (m *interruptMonitor) Stop() {
+	m.stopSignals()
+	m.cancel()
+}
+
+func (m *interruptMonitor) closeDone() {
+	m.once.Do(func() {
+		close(m.done)
+	})
 }
 
 func parseSendArgs(args []string) (sendOptions, bool, error) {
