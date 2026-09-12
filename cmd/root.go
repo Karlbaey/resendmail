@@ -11,7 +11,7 @@ var rootCmd = &cobra.Command{
 	Use:   "resendmail",
 	Short: "Bring Resend to your device",
 	Long: `Resend CLI for your device, based on Resend API,
-	built with code and love.`,
+built with code and love.`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
