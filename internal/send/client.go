@@ -7,19 +7,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"resendmail/internal/config"
 	"time"
 )
 
 type Client struct {
 	baseURL string
 	client  *http.Client
+	apiKey  string
 }
 
-func NewClient(baseURL string) *Client {
+func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		client:  http.DefaultClient,
+		apiKey:  apiKey,
 	}
 }
 
@@ -38,8 +39,8 @@ func (c *Client) SendEmail(ctx context.Context, payload *EmailPayload) (*EmailRe
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.ResendAPIKey)
-	req.Header.Set("User-Agent", "Resendmail/1.0")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("User-Agent", "Resendmail/1.0.0-alpha.1")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request failed: %w", err)
