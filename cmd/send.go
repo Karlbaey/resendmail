@@ -13,23 +13,29 @@ var sendCmd = &cobra.Command{
 	Use:   "send",
 	Short: "Send emails",
 	Long: `Send email through Resend API. Easily decide options
-using flags or interactive prompts. More info check Resend API Docs.`,
+using flags. More info check Resend API Docs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		result, err := send.Send(cmd.Context(), os.Getenv("RESEND_API_KEY"), constructFlags())
+		email, err := constructFlags()
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Success. Email ID: %s\nCheck email on web: https://resend.com/emails/%s", result.ID, result.ID)
+		result, err := send.Send(cmd.Context(), os.Getenv("RESEND_API_KEY"), email)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Success. Email ID: %s\nCheck email on web: https://resend.com/emails/%s\n", result.ID, result.ID)
 		return nil
 	},
 }
 
 var sendFlags struct {
-	subject string
-	from    string
-	to      string
-	text    string
-	html    string
+	subject  string
+	from     string
+	to       string
+	text     string
+	html     string
+	textFile string
+	htmlFile string
 }
 
 func init() {
@@ -39,6 +45,8 @@ func init() {
 	sendCmd.Flags().StringVarP(&sf.to, "to", "t", "", "收件人（必填）")
 	sendCmd.Flags().StringVar(&sf.text, "text", "", "纯文本邮件内容（与 HTML 二选一）")
 	sendCmd.Flags().StringVar(&sf.html, "html", "", "富文本邮件内容（与 Text 二选一）")
+	sendCmd.Flags().StringVar(&sf.textFile, "text-file", "", "纯文本邮件内容（从文件读取）")
+	sendCmd.Flags().StringVar(&sf.htmlFile, "html-file", "", "富文本邮件内容（从文件读取）")
 
 	_ = sendCmd.MarkFlagRequired("subject")
 	_ = sendCmd.MarkFlagRequired("from")
@@ -47,14 +55,29 @@ func init() {
 	rootCmd.AddCommand(sendCmd)
 }
 
-func constructFlags() *send.EmailPayload {
+func constructFlags() (*send.EmailPayload, error) {
+	if sendFlags.htmlFile != "" && sendFlags.html != "" {
+		return nil, fmt.Errorf("--html and --html-file are mutually exclusive")
+	}
+	if sendFlags.textFile != "" && sendFlags.text != "" {
+		return nil, fmt.Errorf("--text and --text-file are mutually exclusive")
+	}
+	html, err := loadContent(sendFlags.html, sendFlags.htmlFile)
+	if err != nil {
+		return nil, err
+	}
+	text, err := loadContent(sendFlags.text, sendFlags.textFile)
+	if err != nil {
+		return nil, err
+	}
+
 	return &send.EmailPayload{
 		Subject: sendFlags.subject,
 		From:    sendFlags.from,
 		To:      splitCSV(sendFlags.to),
-		HTML:    sendFlags.html,
-		Text:    sendFlags.text,
-	}
+		HTML:    html,
+		Text:    text,
+	}, nil
 }
 
 func splitCSV(s string) []string {
@@ -65,4 +88,18 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func loadContent(inline, path string) (string, error) {
+	if inline != "" {
+		return inline, nil
+	}
+	if path == "" {
+		return "", nil
+	}
+	dat, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read content file %q: %w", path, err)
+	}
+	return string(dat), nil
 }

@@ -12,10 +12,5 @@ func Send(ctx context.Context, apiKey string, email *EmailPayload) (*EmailRespon
 	}
 	client := NewClient(constants.ResendAPIBase, apiKey)
 
-	result, err := client.SendEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return client.SendEmail(ctx, email)
 }
