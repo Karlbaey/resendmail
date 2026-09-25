@@ -36,6 +36,7 @@ var sendFlags struct {
 	html     string
 	textFile string
 	htmlFile string
+	attach   []string
 }
 
 func init() {
@@ -47,6 +48,7 @@ func init() {
 	sendCmd.Flags().StringVar(&sf.html, "html", "", "富文本邮件内容（与 Text 二选一）")
 	sendCmd.Flags().StringVar(&sf.textFile, "text-file", "", "纯文本邮件内容（从文件读取）")
 	sendCmd.Flags().StringVar(&sf.htmlFile, "html-file", "", "富文本邮件内容（从文件读取）")
+	sendCmd.Flags().StringArrayVarP(&sf.attach, "attach", "a", []string{}, "附件（填文件路径）")
 
 	_ = sendCmd.MarkFlagRequired("subject")
 	_ = sendCmd.MarkFlagRequired("from")
@@ -70,13 +72,22 @@ func constructFlags() (*send.EmailPayload, error) {
 	if err != nil {
 		return nil, err
 	}
+	var attach []send.Attachment
+	for _, path := range sendFlags.attach {
+		dat, err := send.LoadLocalAttachment(path)
+		if err != nil {
+			return nil, err
+		}
+		attach = append(attach, dat)
+	}
 
 	return &send.EmailPayload{
-		Subject: sendFlags.subject,
-		From:    sendFlags.from,
-		To:      splitCSV(sendFlags.to),
-		HTML:    html,
-		Text:    text,
+		Subject:     sendFlags.subject,
+		From:        sendFlags.from,
+		To:          splitCSV(sendFlags.to),
+		HTML:        html,
+		Text:        text,
+		Attachments: attach,
 	}, nil
 }
 
