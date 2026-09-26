@@ -1,6 +1,6 @@
 # resendmail
 
-`resendmail` 是一个使用 Go 标准库实现的 CLI，用来直接调用 Resend HTTP API 发送电子邮件。
+`resendmail` 是一个用 Go 实现的 CLI，直接调用 Resend HTTP API 发送电子邮件。
 
 友情链接：[LINUX DO](https://linux.do)。
 
@@ -30,8 +30,10 @@ go build -o resendmail .
 ```bash
 resendmail send \
   --from sender@example.com \
-  --to alice@example.com,bob@example.com \
+  --to alice@example.com \
+  --to bob@example.com \
   --cc copy@example.com \
+  --bcc boss@example.com \
   --subject "Hello" \
   --text "Plain text body"
 ```
@@ -52,13 +54,14 @@ resendmail send \
 - 至少提供一个正文来源：`--text`、`--text-file`、`--html`、`--html-file`
 - `--text` 和 `--text-file` 互斥
 - `--html` 和 `--html-file` 互斥
-- `--to` 和 `--cc` 可重复传入，也支持逗号分隔
-- 默认请求超时是 `10s`，可通过 `--timeout` 覆盖
+- `--to`、`--cc`、`--bcc` 可重复传入
+- 请求超时固定为 `12s`(见 `internal/send/client.go`)
 
-发送成功后输出 JSON，例如：
+发送成功后输出邮件 ID 与网页查看链接，例如：
 
-```json
-{"id":"email_123"}
+```text
+Success. Email ID: email_123
+Check email on web: https://resend.com/emails/email_123
 ```
 
 ## 开发

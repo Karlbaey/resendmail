@@ -12,6 +12,8 @@ type EmailPayload struct {
 	Text        string       `json:"text,omitempty"`
 	HTML        string       `json:"html,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
+	CC          []string     `json:"cc,omitempty"`
+	BCC         []string     `json:"bcc,omitempty"`
 }
 
 type Attachment struct {

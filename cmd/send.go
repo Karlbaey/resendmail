@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"resendmail/internal/send"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -31,24 +30,28 @@ using flags. More info check Resend API Docs.`,
 var sendFlags struct {
 	subject  string
 	from     string
-	to       string
+	to       []string
 	text     string
 	html     string
 	textFile string
 	htmlFile string
 	attach   []string
+	bcc      []string
+	cc       []string
 }
 
 func init() {
 	sf := &sendFlags
 	sendCmd.Flags().StringVarP(&sf.subject, "subject", "s", "", "发件主题（必填）")
 	sendCmd.Flags().StringVarP(&sf.from, "from", "f", "", "发件人（必填）")
-	sendCmd.Flags().StringVarP(&sf.to, "to", "t", "", "收件人（必填）")
+	sendCmd.Flags().StringArrayVarP(&sf.to, "to", "t", []string{}, "收件人（必填，可多次使用 flag）")
 	sendCmd.Flags().StringVar(&sf.text, "text", "", "纯文本邮件内容（与 HTML 二选一）")
 	sendCmd.Flags().StringVar(&sf.html, "html", "", "富文本邮件内容（与 Text 二选一）")
 	sendCmd.Flags().StringVar(&sf.textFile, "text-file", "", "纯文本邮件内容（从文件读取）")
 	sendCmd.Flags().StringVar(&sf.htmlFile, "html-file", "", "富文本邮件内容（从文件读取）")
-	sendCmd.Flags().StringArrayVarP(&sf.attach, "attach", "a", []string{}, "附件（填文件路径）")
+	sendCmd.Flags().StringArrayVarP(&sf.attach, "attach", "a", []string{}, "附件（填文件路径，可多次使用 flag）")
+	sendCmd.Flags().StringArrayVar(&sf.bcc, "bcc", []string{}, "密送（可多次使用 flag）")
+	sendCmd.Flags().StringArrayVar(&sf.cc, "cc", []string{}, "抄送（可多次使用 flag）")
 
 	_ = sendCmd.MarkFlagRequired("subject")
 	_ = sendCmd.MarkFlagRequired("from")
@@ -84,21 +87,13 @@ func constructFlags() (*send.EmailPayload, error) {
 	return &send.EmailPayload{
 		Subject:     sendFlags.subject,
 		From:        sendFlags.from,
-		To:          splitCSV(sendFlags.to),
+		To:          sendFlags.to,
 		HTML:        html,
 		Text:        text,
 		Attachments: attach,
+		BCC:         sendFlags.bcc,
+		CC:          sendFlags.cc,
 	}, nil
-}
-
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func loadContent(inline, path string) (string, error) {
