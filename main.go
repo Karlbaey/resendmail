@@ -1,9 +1,7 @@
 package main
 
-import (
-	"os"
-)
+import "resendmail/cmd"
 
 func main() {
-	os.Exit(run(os.Args[1:], defaultRuntimeDeps(os.Stdin, os.Stdout, os.Stderr)))
+	cmd.Execute()
 }
