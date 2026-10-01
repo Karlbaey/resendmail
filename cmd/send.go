@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"resendmail/internal/interactive"
 	"resendmail/internal/send"
 
 	"github.com/spf13/cobra"
@@ -14,10 +15,24 @@ var sendCmd = &cobra.Command{
 	Long: `Send email through Resend API. Easily decide options
 using flags. More info check Resend API Docs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		email, err := constructFlags()
-		if err != nil {
-			return err
+		var email *send.EmailPayload
+		var err error
+		if sendFlags.interactive {
+			email, err = interactive.Ask(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if email == nil {
+				fmt.Printf("操作已取消")
+				return nil
+			}
+		} else {
+			email, err = constructFlags()
+			if err != nil {
+				return err
+			}
 		}
+
 		result, err := send.Send(cmd.Context(), os.Getenv("RESEND_API_KEY"), email)
 		if err != nil {
 			return err
@@ -28,16 +43,17 @@ using flags. More info check Resend API Docs.`,
 }
 
 var sendFlags struct {
-	subject  string
-	from     string
-	to       []string
-	text     string
-	html     string
-	textFile string
-	htmlFile string
-	attach   []string
-	bcc      []string
-	cc       []string
+	subject     string
+	from        string
+	to          []string
+	text        string
+	html        string
+	textFile    string
+	htmlFile    string
+	attach      []string
+	interactive bool
+	bcc         []string
+	cc          []string
 }
 
 func init() {
@@ -52,10 +68,11 @@ func init() {
 	sendCmd.Flags().StringArrayVarP(&sf.attach, "attach", "a", []string{}, "附件（填文件路径，可多次使用 flag）")
 	sendCmd.Flags().StringArrayVar(&sf.bcc, "bcc", []string{}, "密送（可多次使用 flag）")
 	sendCmd.Flags().StringArrayVar(&sf.cc, "cc", []string{}, "抄送（可多次使用 flag）")
+	sendCmd.Flags().BoolVarP(&sf.interactive, "interactive", "i", false, "交互式发送邮件，其余所有的 flag 均会被忽略")
 
-	_ = sendCmd.MarkFlagRequired("subject")
-	_ = sendCmd.MarkFlagRequired("from")
-	_ = sendCmd.MarkFlagRequired("to")
+	// _ = sendCmd.MarkFlagRequired("subject")
+	// _ = sendCmd.MarkFlagRequired("from")
+	// _ = sendCmd.MarkFlagRequired("to")
 
 	rootCmd.AddCommand(sendCmd)
 }
